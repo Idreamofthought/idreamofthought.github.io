@@ -1,6 +1,414 @@
-/game/
-   index.html
-   script.js
-   style.css
-   assets/
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Portus — Town Builder</title>
+<style>
+  :root{
+    --sea:#2b6777; --sea-deep:#1c4a56; --sand:#e8dcc8; --grass:#8fa15e; --grass-dk:#7c8f4d;
+    --forest:#4c6b3f; --mountain:#8c8577; --river:#3f8fa3; --clay:#b5651d;
+    --terracotta:#c1440e; --gold:#d4a017; --ink:#2b2622; --paper:#f4ecdd; --panel:#fffaf0;
+    --line:#d8cbb0;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0;padding:0;height:100%;background:var(--ink);overflow:hidden;font-family:Georgia,'Iowan Old Style',serif;}
+  #app{display:flex;flex-direction:column;height:100%;background:var(--paper);}
+
+  header{
+    background:linear-gradient(180deg,#3a3128,#2b2622);
+    color:var(--paper); padding:8px 12px; flex-shrink:0;
+    border-bottom:3px solid var(--gold);
+  }
+  header h1{margin:0; font-size:18px; letter-spacing:2px; font-weight:normal; text-transform:uppercase;}
+  header h1 span{color:var(--gold);}
+
+  #resbar{
+    display:flex; gap:2px; overflow-x:auto; padding:6px 8px; background:#3a3128;
+    border-bottom:1px solid #000; flex-shrink:0; -webkit-overflow-scrolling:touch;
+  }
+  .res{
+    flex:0 0 auto; display:flex; align-items:center; gap:4px; background:#2b2622;
+    color:var(--paper); padding:4px 8px; border-radius:12px; font-size:12px; white-space:nowrap;
+    border:1px solid #4a4038; font-family:-apple-system,sans-serif;
+  }
+  .res b{color:var(--gold); font-weight:600;}
+  .res.warn{border-color:#c1440e; color:#ffb199;}
+
+  #statusbar{
+    display:flex; justify-content:space-between; padding:4px 10px; font-size:11px;
+    background:#241f19; color:#c9bfa8; font-family:-apple-system,sans-serif; flex-shrink:0;
+  }
+
+  #main{flex:1; display:flex; overflow:hidden; min-height:0;}
+  #mapwrap{flex:1; overflow:auto; position:relative; background:var(--sea-deep); touch-action:pan-x pan-y;}
+  canvas{display:block; image-rendering:pixelated;}
+
+  #toast{
+    position:absolute; top:8px; left:50%; transform:translateX(-50%);
+    background:rgba(30,25,20,0.92); color:var(--gold); padding:6px 14px; border-radius:6px;
+    font-size:13px; font-family:-apple-system,sans-serif; pointer-events:none; opacity:0;
+    transition:opacity 0.3s; z-index:20; border:1px solid var(--gold); white-space:nowrap;
+  }
+  #toast.show{opacity:1;}
+
+  #panel{
+    width:150px; flex-shrink:0; background:var(--panel); border-left:2px solid var(--line);
+    overflow-y:auto; padding-bottom:60px;
+  }
+  .catlabel{
+    font-family:-apple-system,sans-serif; font-size:10px; text-transform:uppercase; letter-spacing:1px;
+    color:#8a7a5c; padding:8px 8px 2px; font-weight:600;
+  }
+  .bldbtn{
+    display:flex; align-items:center; gap:6px; width:100%; padding:6px 8px; border:none;
+    background:none; text-align:left; font-family:-apple-system,sans-serif; font-size:12px;
+    color:var(--ink); border-bottom:1px solid #ece2cc; cursor:pointer;
+  }
+  .bldbtn:active, .bldbtn.selected{background:var(--gold); color:#2b2622;}
+  .bldbtn .ic{font-size:17px; width:20px; text-align:center;}
+  .bldbtn .info{flex:1; line-height:1.25;}
+  .bldbtn .cost{font-size:10px; color:#8a7a5c;}
+  .bldbtn.selected .cost{color:#4a3f20;}
+
+  #cropbar{
+    display:none; gap:4px; padding:6px 8px; background:#3a3128; border-bottom:1px solid #000;
+    font-family:-apple-system,sans-serif; font-size:11px; flex-shrink:0; align-items:center; color:var(--paper);
+  }
+  #cropbar button{
+    padding:4px 8px; border-radius:10px; border:1px solid #6a5c46; background:#2b2622; color:var(--paper);
+    font-size:11px;
+  }
+  #cropbar button.active{background:var(--gold); color:#2b2622; border-color:var(--gold);}
+
+  #cancelBtn{
+    position:absolute; bottom:10px; right:10px; z-index:15; background:var(--terracotta); color:#fff;
+    border:none; padding:8px 14px; border-radius:20px; font-family:-apple-system,sans-serif; font-size:12px;
+    display:none; box-shadow:0 2px 6px rgba(0,0,0,0.4);
+  }
+  #legend{position:absolute; bottom:10px; left:10px; z-index:15; font-family:-apple-system,sans-serif; font-size:10px; color:#e8dcc8; background:rgba(20,16,12,0.6); padding:4px 8px; border-radius:6px;}
+
+  #menuStack{position:absolute; top:10px; right:10px; z-index:15; display:flex; flex-direction:column; gap:6px;}
+  .menuBtn{
+    background:#2b6777; color:#fff; border:1px solid var(--gold); padding:7px 12px; border-radius:20px;
+    font-family:-apple-system,sans-serif; font-size:12px; box-shadow:0 2px 6px rgba(0,0,0,0.4); text-align:left;
+  }
+  .menuBtn.active{background:var(--gold); color:#2b2622;}
+  .sidepanel{
+    display:none; position:absolute; top:44px; right:10px; z-index:16; width:240px; max-height:72%;
+    overflow-y:auto; background:var(--panel); border:2px solid var(--gold); border-radius:8px;
+    box-shadow:0 4px 14px rgba(0,0,0,0.5); font-family:-apple-system,sans-serif;
+  }
+  .sidepanel.open{display:block;}
+  .panelHead{
+    display:flex; justify-content:space-between; align-items:center; padding:8px 10px;
+    background:#2b2622; color:var(--gold); font-size:12px; position:sticky; top:0;
+  }
+  .panelHead .closeP{background:none; border:none; color:#fff; font-size:13px;}
+  .panelBody{padding:8px 10px;}
+  #researchList{padding:4px;}
+  .tech{padding:7px 8px; border-bottom:1px solid #ece2cc; font-size:11px; color:var(--ink);}
+  .tech .tname{font-weight:600; font-size:12px;}
+  .tech .tdesc{color:#6b5f4a; margin:2px 0 4px;}
+  .tech button{width:100%; padding:4px; border-radius:6px; border:1px solid var(--gold); background:#fff8e8; font-size:11px; color:#5a4a1a;}
+  .tech.done{opacity:0.55;}
+  .tech.done button{background:#dff0d8; border-color:#7a9c5c; color:#3a5a2a;}
+  .tech button:disabled{opacity:0.5;}
+  .actionbtn{
+    display:block; width:100%; padding:8px; margin-bottom:6px; border-radius:6px; border:1px solid var(--gold);
+    background:#fff8e8; color:#5a4a1a; font-size:12px; text-align:left;
+  }
+  .actionbtn.secondary{background:#f2ece0; border-color:#c9bfa8; color:#6b5f4a;}
+  .actionbtn.raid{background:#fbe9e2; border-color:var(--terracotta); color:#8a3a1c;}
+  #chronicle{font-size:10px; color:#6b5f4a; max-height:110px; overflow-y:auto; line-height:1.5;}
+  #chronicle div{border-bottom:1px dashed #e0d6c0; padding:3px 0;}
+  .flabel{display:block; font-size:10px; text-transform:uppercase; letter-spacing:0.5px; color:#8a7a5c; margin-bottom:3px;}
+  #captainInput, #saveOut, #loadIn, #authEmail, #authPassword, #forgotEmail, #newPassword{
+    width:100%; box-sizing:border-box; padding:6px; border:1px solid #d8cbb0; border-radius:6px;
+    font-size:11px; font-family:monospace; margin-bottom:8px; color:var(--ink); background:#fffef9;
+  }
+  .res.coin{border-color:var(--gold); color:var(--gold);}
+
+  #paywall{
+    position:fixed; inset:0; z-index:999; background:rgba(20,16,12,0.88);
+    display:flex; align-items:center; justify-content:center; padding:16px;
+    font-family:-apple-system,sans-serif;
+  }
+  #paycard{
+    background:var(--panel); border:2px solid var(--gold); border-radius:12px; padding:22px 20px;
+    max-width:300px; width:100%; text-align:center; box-shadow:0 8px 30px rgba(0,0,0,0.6);
+  }
+  #paycard h2{margin:0 0 4px; font-family:Georgia,serif; color:var(--ink); font-size:20px;}
+  .pdesc{color:#6b5f4a; font-size:13px; margin:0 0 16px;}
+  .paybtn{
+    display:block; width:100%; padding:11px; margin-bottom:10px; border-radius:8px; border:none;
+    font-size:14px; font-weight:600; cursor:pointer;
+  }
+  .paybtn.card{background:#1a1f36; color:#fff;}
+  .paybtn.paypal{background:#ffc439; color:#1a1f36;}
+  #confirmRow{margin-top:6px; padding-top:10px; border-top:1px dashed var(--line);}
+  .pnote{font-size:11px; color:#8a7a5c; margin:0 0 8px;}
+  #confirmPaidBtn{
+    width:100%; padding:9px; border-radius:8px; border:1px solid #7a9c5c; background:#eaf3e0;
+    color:#3a5a2a; font-size:13px; font-weight:600;
+  }
+  .pfine{font-size:10px; color:#a89a80; margin:16px 0 0; line-height:1.4;}
+  #timeline{font-weight:600; color:var(--gold);}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="paywall">
+    <div id="paycard">
+      <h2 id="pwTitle">🏛️ Portus Pass</h2>
+      <p class="pdesc" id="pwDesc">Sign in, then $1 buys 1 hour of play.</p>
+
+      <div id="authBox">
+        <input id="authEmail" type="email" placeholder="Email" autocomplete="username">
+        <input id="authPassword" type="password" placeholder="Password (6+ characters)" autocomplete="current-password">
+        <button id="loginBtn" class="actionbtn">Log in</button>
+        <button id="signupBtn" class="actionbtn secondary">Create account</button>
+        <button id="forgotBtn" class="actionbtn secondary" style="background:none;border:none;text-decoration:underline;">Forgot password?</button>
+        <p id="authMsg" class="pnote"></p>
+      </div>
+
+      <div id="forgotBox" style="display:none;">
+        <input id="forgotEmail" type="email" placeholder="Your account email">
+        <button id="sendResetBtn" class="actionbtn">Send reset link</button>
+        <button id="backToLoginBtn" class="actionbtn secondary">Back to login</button>
+      </div>
+
+      <div id="resetBox" style="display:none;">
+        <p class="pnote">Choose a new password.</p>
+        <input id="newPassword" type="password" placeholder="New password (6+ characters)">
+        <button id="submitResetBtn" class="actionbtn">Set new password</button>
+      </div>
+
+      <div id="payBox" style="display:none;">
+        <p class="pnote" id="whoami"></p>
+        <div id="verifyBanner" style="display:none;">
+          <p class="pnote" style="color:#8a3a1c;">📧 Verify your email to unlock payments — check your inbox.</p>
+          <button id="resendBtn" class="actionbtn secondary">Resend verification email</button>
+        </div>
+        <button id="payCardBtn" class="paybtn card">💳 Pay with Card</button>
+        <button id="payPaypalBtn" class="paybtn paypal">🅿️ Pay with PayPal</button>
+        <button id="logoutBtn" class="actionbtn secondary">Log out</button>
+      </div>
+
+      <p class="pfine">Card and PayPal payments are processed entirely by Stripe / PayPal on their own secure pages — this app never sees or stores your card details. Your paid time is tracked on the server, not in this browser.</p>
+    </div>
+  </div>
+  <header><h1>Portus <span>· a town by the sea</span></h1></header>
+  <div id="resbar"></div>
+  <div id="statusbar"><span id="popline"></span><span id="timeline"></span><span id="tickline"></span></div>
+  <div id="cropbar">
+    <span style="margin-right:4px;">Plant:</span>
+    <button data-crop="wheat" class="active">🌾 Wheat</button>
+    <button data-crop="olives">🫒 Olives</button>
+    <button data-crop="chickpeas">🌱 Chickpeas</button>
+  </div>
+  <div id="main">
+    <div id="mapwrap">
+      <canvas id="canvas"></canvas>
+      <div id="toast"></div>
+      <div id="legend">Tap a building, then tap the map to place it</div>
+      <button id="cancelBtn">✕ Cancel</button>
+      <div id="menuStack">
+        <button class="menuBtn" data-panel="researchPanel">📜 Research</button>
+        <button class="menuBtn" data-panel="armyPanel">⚔️ Army</button>
+        <button class="menuBtn" data-panel="savePanel">💾 Save</button>
+      </div>
+      <div id="researchPanel" class="sidepanel">
+        <div class="panelHead"><span>Research — <b id="rpCount">0</b> pts</span><button class="closeP">✕</button></div>
+        <div id="researchList"></div>
+      </div>
+      <div id="armyPanel" class="sidepanel">
+        <div class="panelHead"><span>Army — <b id="soldierCount">0</b>/<b id="soldierCap">0</b> soldiers</span><button class="closeP">✕</button></div>
+        <div class="panelBody">
+          <p class="pnote">Soldiers are drawn from your population and stop working other jobs while enlisted. Build Barracks to raise the cap.</p>
+          <button id="recruitBtn" class="actionbtn">➕ Recruit soldier — 4 tools</button>
+          <button id="disbandBtn" class="actionbtn secondary">➖ Disband soldier</button>
+          <div class="panelHead" style="margin-top:8px;background:none;color:var(--ink);padding-left:0;">Send a raid</div>
+          <button class="actionbtn raid" data-tier="small">🗡️ Small raid — 3 soldiers</button>
+          <button class="actionbtn raid" data-tier="medium">⚔️ Medium raid — 6 soldiers</button>
+          <button class="actionbtn raid" data-tier="large">🏴 Large raid — 10 soldiers</button>
+          <div class="panelHead" style="margin-top:8px;background:none;color:var(--ink);padding-left:0;">Chronicle</div>
+          <div id="chronicle"></div>
+        </div>
+      </div>
+      <div id="savePanel" class="sidepanel">
+        <div class="panelHead"><span>Save &amp; Load</span><button class="closeP">✕</button></div>
+        <div class="panelBody">
+          <p class="pnote">Signed in? Your city can save straight to your account.</p>
+          <button id="cloudSaveBtn" class="actionbtn">☁️ Save to my account</button>
+          <button id="cloudLoadBtn" class="actionbtn secondary">☁️ Load from my account</button>
+          <p class="pnote" style="margin-top:10px;">Or use an offline code — no account needed, just copy/paste.</p>
+          <label class="flabel">Captain name</label>
+          <input id="captainInput" type="text" placeholder="Your name" maxlength="24">
+          <button id="genSaveBtn" class="actionbtn">Generate save code</button>
+          <textarea id="saveOut" rows="3" readonly placeholder="Your save code will appear here"></textarea>
+          <label class="flabel" style="margin-top:8px;">Load a code</label>
+          <textarea id="loadIn" rows="3" placeholder="Paste your save code here"></textarea>
+          <button id="loadBtn" class="actionbtn secondary">Load city</button>
+        </div>
+      </div>
+    </div>
+    <div id="panel"></div>
+  </div>
+  <footer id="legalFooter" style="position:fixed; bottom:0; left:0; right:0; z-index:1000; text-align:center; font-size:9px; color:#c9bfa8; padding:3px; background:rgba(58,49,40,0.92);">
+    © 2026 [Your name/company]. All rights reserved. ·
+    <a href="/terms.html" style="color:#d4a017;">Terms</a> ·
+    <a href="/privacy.html" style="color:#d4a017;">Privacy</a>
+  </footer>
+</div>
+
+<script>
+/* ---------------- MAP GENERATION ---------------- */
+const COLS = 30, ROWS = 20, TS = 30;
+let grid = []; // grid[y][x] = {terrain, deposit, building}
+let selectedCrop = 'wheat';
+
+function rnd(n){ return Math.floor(Math.random()*n); }
+
+function genMap(){
+  grid = [];
+  for(let y=0;y<ROWS;y++){
+    let row=[];
+    for(let x=0;x<COLS;x++) row.push({terrain:'grass', deposit:null, building:null});
+    grid.push(row);
+  }
+  // sea along bottom, irregular coastline
+  for(let x=0;x<COLS;x++){
+    let depth = 3 + rnd(2) - (Math.sin(x/4)*1.2|0);
+    for(let y=ROWS-1;y>=ROWS-Math.max(2,depth);y--) if(y>=0) grid[y][x].terrain='sea';
+  }
+  // beach fringe next to sea
+  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
+    if(grid[y][x].terrain==='grass' && y+1<ROWS && grid[y+1][x].terrain==='sea') grid[y][x].terrain='sand';
+  }
+  // mountains top-left corner cluster
+  const mcx=4, mcy=3;
+  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
+    let d = Math.hypot(x-mcx,y-mcy);
+    if(d < 3.2 + Math.random()*1.3) grid[y][x].terrain='mountain';
+  }
+  // deposits on mountain tiles
+  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
+    if(grid[y][x].terrain==='mountain'){
+      let r=Math.random();
+      if(r<0.09) grid[y][x].deposit='gold';
+      else if(r<0.20) grid[y][x].deposit='silver';
+      else if(r<0.36) grid[y][x].deposit='copper';
+    }
+  }
+  // river from near mountains winding to sea
+  let rx = mcx+3, ry = mcy+2;
+  while(ry < ROWS && grid[ry][rx] && grid[ry][rx].terrain!=='sea'){
+    for(let dx=-1;dx<=1;dx++){
+      let xx=rx+dx;
+      if(xx>=0 && xx<COLS && grid[ry][xx].terrain!=='mountain') grid[ry][xx].terrain='river';
+    }
+    ry += 1;
+    rx += (rnd(3)-1);
+    rx = Math.max(2, Math.min(COLS-3, rx));
+  }
+  // forest patches
+  for(let i=0;i<6;i++){
+    let fx = 6+rnd(COLS-10), fy = 2+rnd(ROWS-6);
+    for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
+      let d=Math.hypot(x-fx,y-fy);
+      if(d<1.6+Math.random()*1.4 && grid[y][x].terrain==='grass' && Math.random()<0.7) grid[y][x].terrain='forest';
+    }
+  }
+  // clay deposits near river/sea banks
+  for(let y=0;y<ROWS;y++) for(let x=0;x<COLS;x++){
+    let t=grid[y][x].terrain;
+    if((t==='grass'||t==='sand') && nearTerrain(x,y,['river','sea'],1) && Math.random()<0.22){
+      grid[y][x].deposit='clay';
+    }
+  }
+}
+
+function inBounds(x,y){ return x>=0&&x<COLS&&y>=0&&y<ROWS; }
+function neighbors(x,y,r){
+  let out=[];
+  for(let dy=-r;dy<=r;dy++) for(let dx=-r;dx<=r;dx++){
+    if(dx===0&&dy===0) continue;
+    let nx=x+dx, ny=y+dy;
+    if(inBounds(nx,ny)) out.push(grid[ny][nx]);
+  }
+  return out;
+}
+function nearTerrain(x,y,list,r){
+  return neighbors(x,y,r).some(t=>list.includes(t.terrain));
+}
+function nearBuilding(x,y,id,r){
+  return neighbors(x,y,r).some(t=>t.building && t.building.id===id);
+}
+function nearDeposit(x,y,dep,r){
+  return neighbors(x,y,r).some(t=>t.deposit===dep);
+}
+
+/* ---------------- RESOURCES ---------------- */
+let res = {
+  wood:60, stone:30, clay:0, pottery:0, tools:10,
+  goldOre:0, silverOre:0, copperOre:0, gold:0, silver:0, copper:0,
+  wheat:0, olives:0, chickpeas:0, fish:0, deer:0, scrolls:0
+};
+let cap = { general:150, food:150 };
+let pop = { count:6, capacity:10 };
+let happiness = 55;
+let boats = 0;
+let tickCount = 0;
+let coin = 20;       // trade currency, not subject to storage cap
+let research = 0;    // banked research points, spent on techs
+let military = { soldiers:0, cap:0 };
+let droughtTicksLeft = 0;
+let captainName = '';
+let eventLog = [];
+
+const FOOD_KEYS = ['wheat','olives','chickpeas','fish','deer'];
+const GENERAL_KEYS = ['wood','stone','clay','pottery','tools','goldOre','silverOre','copperOre','gold','silver','copper','scrolls'];
+
+/* ---- Research / Tech tree ---- */
+const techBonus = { field:1, quarry:1, fish:1, foundry:1, trade:1 };
+const TECHS = [
+  {id:'irrigation', name:'Irrigation', desc:'+25% field yield', cost:8, apply:()=>techBonus.field*=1.25},
+  {id:'masonry', name:'Masonry', desc:'+25% quarry output', cost:8, apply:()=>techBonus.quarry*=1.25},
+  {id:'seafaring', name:'Seafaring', desc:'+25% fish catch', cost:10, apply:()=>techBonus.fish*=1.25},
+  {id:'metallurgy', name:'Metallurgy', desc:'+25% foundry refining', cost:14, apply:()=>techBonus.foundry*=1.25},
+  {id:'currency', name:'Currency', desc:'+30% trade income from markets', cost:16, apply:()=>techBonus.trade*=1.3},
+];
+let unlockedTechs = new Set();
+
+function totalFood(){ return FOOD_KEYS.reduce((s,k)=>s+res[k],0); }
+function addRes(key, amt){
+  if(FOOD_KEYS.includes(key)){
+    let room = cap.food - totalFood();
+    res[key] += Math.max(0, Math.min(amt, room));
+  } else {
+    let room = cap.general - GENERAL_KEYS.reduce((s,k)=>s+res[k],0) + res[key]; // per-key soft cap approximation
+    res[key] = Math.min(res[key]+amt, cap.general);
+  }
+}
+function canAfford(cost){
+  return Object.entries(cost).every(([k,v]) => (res[k]||0) >= v);
+}
+function pay(cost){
+  Object.entries(cost).forEach(([k,v]) => res[k] -= v);
+}
+
+/* ---------------- BUILDINGS ---------------- */
+const BUILDINGS = [
+ {id:'house', name:"House", ic:'🏠', cat:'Housing', cost:{wood:20,stone:10}, workers:0, popCap:4,
+   valid:(x,y)=>['grass','sand'].includes(grid[y][x].terrain)},
+ {id:'farmerhut', name:"Farmer's Hut", ic:'🧑‍🌾', cat:'Housing', cost:{wood:20}, workers:2, popCap:2,
+   valid:(x,y)=>grid[y][x].terrain==='grass',
+   desc:'Boosts nearby fields'},
+ {id:'fisherhut', name:"Fisherman's Hut", ic:'🎣', cat:'Housing', cost:{wood:20}, workers:2, popCap:2,
+   valid:(x,y)=>['grass','sand'].includes(grid[y][x].terrain) && nearTerrain(x,y,['sea','river'],1),
+   produce:{fish:1.6}},
+ {id:'fields', name:"Field", ic:'🌾', cat:'Production', cost:{wood:10}, workers:2,
+   valid:(x,y)=>grid[y][x].terrain==='grass', isField:true},
+ {id:'quarry', name:"Quarry", i
 
