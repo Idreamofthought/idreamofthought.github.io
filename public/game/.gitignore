@@ -1,0 +1,5 @@
+node_modules/
+.env
+portus.db
+portus.db-shm
+portus.db-wal
