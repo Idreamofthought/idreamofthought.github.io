@@ -16,7 +16,6 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const Database = require('better-sqlite3');
 const Stripe = require('stripe');
-const paypal = require('@paypal/checkout-server-sdk');
 const rateLimit = require('express-rate-limit');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
@@ -26,6 +25,13 @@ const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME_IN_.env_FILE';
 const SITE_URL = process.env.SITE_URL || 'https://www.idreamofthought.org';
 const IS_PROD = process.env.NODE_ENV === 'production';
+const DEV_FREE_PLAY = process.env.DEV_FREE_PLAY === 'true';
+if (DEV_FREE_PLAY) {
+  console.warn('');
+  console.warn('⚠️  ⚠️  ⚠️  DEV_FREE_PLAY IS ON — every signup/login gets 24h free access, no payment or email verification needed.');
+  console.warn('⚠️  This is for testing ONLY. Remove DEV_FREE_PLAY from your environment variables before going live.');
+  console.warn('');
+}
 
 const stripe = process.env.STRIPE_SECRET_KEY ? Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
@@ -280,9 +286,15 @@ app.post('/api/signup', authLimiter, async (req, res) => {
   const token = signToken({ id: userId, email: normEmail });
   setAuthCookie(res, token);
 
-  const verifyToken = setVerificationToken(userId);
-  try { await sendVerificationEmail(normEmail, verifyToken); }
-  catch (e) { console.error('Failed to send verification email:', e.message); }
+  if (DEV_FREE_PLAY) {
+    db.prepare('UPDATE users SET email_verified=1 WHERE id=?').run(userId);
+    grantHours(userId, 24);
+    console.warn(`[DEV_FREE_PLAY] Auto-verified and granted 24h free access to ${normEmail}`);
+  } else {
+    const verifyToken = setVerificationToken(userId);
+    try { await sendVerificationEmail(normEmail, verifyToken); }
+    catch (e) { console.error('Failed to send verification email:', e.message); }
+  }
 
   res.json({ ok: true, email: normEmail });
 });
@@ -296,6 +308,11 @@ app.post('/api/login', authLimiter, (req, res) => {
   }
   const token = signToken(user);
   setAuthCookie(res, token);
+  if (DEV_FREE_PLAY) {
+    db.prepare('UPDATE users SET email_verified=1 WHERE id=?').run(user.id);
+    grantHours(user.id, 24);
+    console.warn(`[DEV_FREE_PLAY] Auto-verified and granted 24h free access to ${user.email}`);
+  }
   res.json({ ok: true, email: user.email });
 });
 
@@ -436,71 +453,111 @@ app.post('/api/checkout/stripe', checkoutLimiter, requireAuth, async (req, res) 
 });
 
 /* ------------------------------------------------------------------ */
-/* PayPal checkout                                                      */
+/* PayPal checkout — built around a real "no-code" Pay Link            */
+/* (paypal.com/ncp/payment/...) rather than dynamically-created        */
+/* orders. A static link can't carry a per-user ID through to PayPal   */
+/* and back, so instead we verify the webhook PayPal sends when the    */
+/* link is paid, and match the transaction to an account by the        */
+/* payer's email address. Still fully server-verified — nothing here   */
+/* trusts the browser.                                                  */
 /* ------------------------------------------------------------------ */
-function paypalClient() {
-  // Switch to SandboxEnvironment while testing, LiveEnvironment once you
-  // have real PayPal Business credentials.
-  const Env = IS_PROD ? paypal.core.LiveEnvironment : paypal.core.SandboxEnvironment;
-  const env = new Env(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET);
-  return new paypal.core.PayPalHttpClient(env);
+const PAYPAL_PAY_LINK = process.env.PAYPAL_PAY_LINK || null;
+const PAYPAL_API_BASE = IS_PROD ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+
+async function paypalAccessToken() {
+  const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_CLIENT_SECRET}`).toString('base64');
+  const r = await fetch(`${PAYPAL_API_BASE}/v1/oauth2/token`, {
+    method: 'POST',
+    headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'grant_type=client_credentials',
+  });
+  const data = await r.json();
+  if (!data.access_token) throw new Error('could not get PayPal access token');
+  return data.access_token;
 }
 
+async function verifyPaypalWebhook(req) {
+  const token = await paypalAccessToken();
+  const body = {
+    auth_algo: req.headers['paypal-auth-algo'],
+    cert_url: req.headers['paypal-cert-url'],
+    transmission_id: req.headers['paypal-transmission-id'],
+    transmission_sig: req.headers['paypal-transmission-sig'],
+    transmission_time: req.headers['paypal-transmission-time'],
+    webhook_id: process.env.PAYPAL_WEBHOOK_ID,
+    webhook_event: req.body,
+  };
+  const r = await fetch(`${PAYPAL_API_BASE}/v1/notifications/verify-webhook-signature`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await r.json();
+  return data.verification_status === 'SUCCESS';
+}
+
+// The frontend calls this the same way it calls /api/checkout/stripe —
+// it just hands back a URL to redirect to. The real security gate
+// (verified email) still happens here, server-side, before the link
+// is even handed out.
 app.post('/api/checkout/paypal', checkoutLimiter, requireAuth, async (req, res) => {
   const acct = db.prepare('SELECT email_verified FROM users WHERE id=?').get(req.user.uid);
   if (!acct || !acct.email_verified) {
     return res.status(403).json({ error: 'Please verify your email before purchasing a pass.' });
   }
-  if (!process.env.PAYPAL_CLIENT_ID) {
+  if (!PAYPAL_PAY_LINK) {
     return res.status(500).json({ error: 'PayPal is not configured on this server yet' });
   }
-  try {
-    const request = new paypal.orders.OrdersCreateRequest();
-    request.prefer('return=representation');
-    request.requestBody({
-      intent: 'CAPTURE',
-      purchase_units: [
-        {
-          amount: { currency_code: 'USD', value: '1.00' },
-          custom_id: String(req.user.uid),
-        },
-      ],
-      application_context: {
-        return_url: `${SITE_URL}/api/checkout/paypal/capture`,
-        cancel_url: `${SITE_URL}/?paid=cancel`,
-      },
-    });
-    const order = await paypalClient().execute(request);
-    const approve = order.result.links.find((l) => l.rel === 'approve');
-    res.json({ url: approve.href });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'could not start PayPal checkout' });
-  }
+  res.json({ url: PAYPAL_PAY_LINK });
 });
 
-// PayPal redirects the browser here after approval; we capture the order
-// server-side (this is the step that actually moves money) then bounce
-// the browser back to the game.
-app.get('/api/checkout/paypal/capture', async (req, res) => {
-  try {
-    const orderId = req.query.token; // PayPal appends ?token=ORDER_ID
-    const request = new paypal.orders.OrdersCaptureRequest(orderId);
-    request.requestBody({});
-    const capture = await paypalClient().execute(request);
-    const unit = capture.result.purchase_units?.[0];
-    const userId = Number(unit?.payments?.captures?.[0]?.custom_id || unit?.custom_id);
-    if (userId) {
-      grantHours(userId, 1);
+// PayPal calls this directly (server-to-server) when the Pay Link is
+// paid — this is the step that actually grants access, independent of
+// whatever happens in the buyer's browser afterward.
+app.post('/api/webhook/paypal-link', async (req, res) => {
+  if (!process.env.PAYPAL_CLIENT_ID || !process.env.PAYPAL_WEBHOOK_ID) {
+    console.warn('PayPal webhook received but PAYPAL_CLIENT_ID/PAYPAL_WEBHOOK_ID not configured — ignoring.');
+    return res.status(500).send('not configured');
+  }
+  let verified = false;
+  try { verified = await verifyPaypalWebhook(req); }
+  catch (e) { console.error('PayPal webhook verification error:', e.message); }
+  if (!verified) {
+    console.warn('PayPal webhook failed signature verification — ignoring.');
+    return res.status(400).send('invalid signature');
+  }
+
+  const event = req.body;
+  // CHECKOUT.ORDER.APPROVED fires once per order and reliably includes
+  // the payer's email — that's what we grant access on. (We deliberately
+  // don't also grant on PAYMENT.CAPTURE.COMPLETED for the same order,
+  // to avoid double-granting an hour for one payment.)
+  if (event.event_type === 'CHECKOUT.ORDER.APPROVED') {
+    const resource = event.resource || {};
+    const payerEmail = resource.payer?.email_address;
+    const amount = resource.purchase_units?.[0]?.amount;
+    const orderId = resource.id;
+
+    if (!payerEmail) {
+      console.warn(`PayPal order ${orderId} approved but no payer email in payload — needs manual reconciliation.`);
+      return res.json({ received: true });
+    }
+    if (amount && (amount.currency_code !== 'USD' || Number(amount.value) < 0.99)) {
+      console.warn(`PayPal order ${orderId} had unexpected amount ${amount.value} ${amount.currency_code} — skipping auto-grant.`);
+      return res.json({ received: true });
+    }
+
+    const user = db.prepare('SELECT id FROM users WHERE email=?').get(payerEmail.toLowerCase());
+    if (user) {
+      grantHours(user.id, 1);
       db.prepare(
         `INSERT OR IGNORE INTO payments (id,user_id,provider,amount_cents,status) VALUES (?,?,?,?,?)`
-      ).run(orderId, userId, 'paypal', 100, 'completed');
+      ).run(orderId, user.id, 'paypal', Math.round((amount ? Number(amount.value) : 1) * 100), 'completed');
+    } else {
+      console.warn(`PayPal payment from ${payerEmail} (order ${orderId}) doesn't match any account — needs manual reconciliation.`);
     }
-    res.redirect(`${SITE_URL}/?paid=paypal`);
-  } catch (err) {
-    console.error(err);
-    res.redirect(`${SITE_URL}/?paid=error`);
   }
+  res.json({ received: true });
 });
 
 /* ------------------------------------------------------------------ */
